@@ -7,6 +7,16 @@ DIR="app/${SLUG}-masterlist"
 SOURCE="app/bravo-masterlist"
 mkdir -p "$DIR"
 cp "$SOURCE/masterlist.css" "$DIR/${SLUG}.css"
+
+cat > "$DIR/layout.tsx" << 'LAYOUTEOF'
+export const dynamic = 'force-dynamic'
+export const fetchCache = 'force-no-store'
+export const revalidate = 0
+
+export default function RouteLayout({ children }: { children: React.ReactNode }) {
+  return children
+}
+LAYOUTEOF
 sed \
   -e "s|bravo_masterlist|${SLUG}_masterlist|g" \
   -e "s|bravo_prioritization|${SLUG}_prioritization|g" \
