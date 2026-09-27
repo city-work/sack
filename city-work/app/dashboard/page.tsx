@@ -47,7 +47,7 @@ function isDone(v: any) {
   return v === true || v === 1 || v === '1' || v === 'true'
 }
 
-export default function DashboardPage() {
+function DashboardPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const supabase = useMemo(() => createClient(), [])
@@ -828,5 +828,13 @@ export default function DashboardPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function DashboardPage() {
+  return (
+    <React.Suspense fallback={null}>
+      <DashboardPageInner />
+    </React.Suspense>
   )
 }
