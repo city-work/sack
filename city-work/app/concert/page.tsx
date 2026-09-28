@@ -448,6 +448,16 @@ export default function ConcertPage() {
               <i className="ph-bold ph-plus" />
             </button>
 
+            <button
+              className="btn-csv danger"
+              onClick={deleteConcert}
+              title={currentTitle ? `Delete ${currentTitle}` : 'Delete concert'}
+              disabled={!currentTitle}
+              aria-label={currentTitle ? `Delete ${currentTitle}` : 'Delete concert'}
+            >
+              <i className="ph ph-trash" />
+            </button>
+
             <span className={`status-badge-top ${statusClass}`}>
               <span className={`status-dot ${statusDot}`} />
             </span>
@@ -572,9 +582,6 @@ export default function ConcertPage() {
                     </button>
                     <button className="btn-csv export" onClick={exportCSV} title="Export entries to CSV">
                       <i className="ph ph-download-simple" />
-                    </button>
-                    <button className="btn-csv danger" onClick={deleteConcert} title="Delete this concert">
-                      <i className="ph ph-trash" />
                     </button>
                     <button className="btn-add-episode" onClick={openEntryModal}>
                       <i className="ph-bold ph-plus" /> Add Entry
