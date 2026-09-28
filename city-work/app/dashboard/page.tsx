@@ -77,7 +77,6 @@ function DashboardPageInner() {
   const [showItemModal, setShowItemModal] = useState(false)
   const [itemName, setItemName] = useState('')
   const [itemDesc, setItemDesc] = useState('')
-  const [itemUrl, setItemUrl] = useState('')
   const [itemIcon, setItemIcon] = useState('ph-folder-open')
 
   const redirectingRef = useRef(false)
@@ -130,7 +129,6 @@ function DashboardPageInner() {
       .subscribe()
   }
 
-  /* ── Boot: auth check ───────────────────────────────── */
   useEffect(() => {
     let cancelled = false
     let sub: any = null
@@ -174,17 +172,18 @@ function DashboardPageInner() {
         if (cancelled) return
         setUser({ id: authUser.id, email: authUser.email ?? '', role })
 
-        // Load persisted panels + masterlist
         try {
           const raw = localStorage.getItem('citywork_dynamic_panels')
           if (raw) setDynamicPanels(JSON.parse(raw))
         } catch {}
+
         try {
           const { data: rows } = await dbMl
             .from('dashboard_items')
             .select('*')
             .order('position', { ascending: true })
             .order('created_at', { ascending: true })
+
           if (rows && rows.length > 0) {
             setMasterlist(rows.map((r: any) => ({
               id: r.id,
@@ -194,7 +193,6 @@ function DashboardPageInner() {
               icon: r.icon || 'ph-folder-open',
             })))
           } else {
-            // First run — seed the defaults into Supabase
             const seeded: any[] = []
             for (let i = 0; i < DEFAULT_MASTERLIST.length; i++) {
               const it = DEFAULT_MASTERLIST[i]
@@ -208,9 +206,10 @@ function DashboardPageInner() {
             }
             setMasterlist(seeded)
           }
-        } catch { setMasterlist(DEFAULT_MASTERLIST) }
+        } catch {
+          setMasterlist(DEFAULT_MASTERLIST)
+        }
 
-        // Check connection
         setStatus({ text: 'Connecting', kind: 'waiting' })
         const { error: probeErr } = await supabase
           .schema('weekly')
@@ -258,8 +257,6 @@ function DashboardPageInner() {
   useEffect(() => {
     try { localStorage.setItem('citywork_dynamic_panels', JSON.stringify(dynamicPanels)) } catch {}
   }, [dynamicPanels])
-
-  // masterlist persists to Supabase now
 
   async function handleSignOut() {
     if (!confirm('Sign out of City Work?')) return
@@ -311,38 +308,62 @@ function DashboardPageInner() {
   }
 
   async function handleAddItem() {
-    const n = itemName.trim(), u = itemUrl.trim()
+    const n = itemName.trim()
     if (!n) { showMessage('Please enter an item name', 'error'); return }
-    if (!u) { showMessage('Please enter a URL or path', 'error'); return }
-    const { data, error } = await dbMl.from('dashboard_items').insert({
-      name: n,
-      description: itemDesc.trim() || 'No description provided.',
-      url: u,
-      icon: itemIcon,
-      position: masterlist.length,
-    }).select().single()
-    if (error) { showMessage('Failed: ' + error.message, 'error'); return }
-    setMasterlist(prev => [...prev, {
-      id: data.id,
-      name: data.name,
-      description: data.description || '',
-      url: data.url,
-      icon: data.icon || 'ph-folder-open',
-    }])
+
+    const { data, error } = await dbMl.rpc('create_masterlist', {
+      p_name: n,
+      p_description: itemDesc.trim() || 'No description provided.',
+      p_icon: itemIcon,
+    })
+
+    if (error) {
+      showMessage('Failed to create masterlist: ' + error.message, 'error')
+      return
+    }
+
+    const item = data as {
+      id: string
+      name: string
+      description: string
+      url: string
+      icon: string
+      table_name: string
+    }
+
+    const newItem: MasterlistItem = {
+      id: item.id,
+      name: item.name,
+      description: item.description || '',
+      url: item.url,
+      icon: item.icon || 'ph-folder-open',
+    }
+
+    setMasterlist(prev => [...prev, newItem])
     setShowItemModal(false)
     setItemName('')
     setItemDesc('')
-    setItemUrl('')
     setItemIcon('ph-folder-open')
-    showMessage(`"${n}" added`, 'success')
+    showMessage(`"${n}" created`, 'success')
+    router.push(item.url)
   }
 
   async function handleRemoveItem(id: string) {
     const item = masterlist.find(i => i.id === id)
     if (!item) return
-    if (!confirm(`Remove "${item.name}"?`)) return
-    const { error } = await dbMl.from('dashboard_items').delete().eq('id', id)
-    if (error) { showMessage('Failed: ' + error.message, 'error'); return }
+    if (!confirm(`Remove "${item.name}"? This will also delete its separate Supabase table and all records.`)) return
+
+    const isDynamic = item.url.startsWith('/masterlist/')
+
+    const result = isDynamic
+      ? await dbMl.rpc('delete_masterlist', { p_item_id: id })
+      : await dbMl.from('dashboard_items').delete().eq('id', id)
+
+    if (result.error) {
+      showMessage('Failed: ' + result.error.message, 'error')
+      return
+    }
+
     setMasterlist(prev => prev.filter(i => i.id !== id))
     showMessage(`"${item.name}" removed`, 'warning')
   }
@@ -468,7 +489,6 @@ function DashboardPageInner() {
     <div className="dash-root">
       <div className="app-container">
 
-        {/* SIDEBAR */}
         <aside className={`sidebar ${sidebarOpen ? 'expanded' : ''}`} role="navigation">
           <div className="sidebar-header">
             <span className="brand-icon"><i className="ph-fill ph-buildings" /></span>
@@ -519,7 +539,6 @@ function DashboardPageInner() {
           </div>
         </aside>
 
-        {/* MAIN */}
         <div className="main-content">
           <header className="app-header">
             <div className="header-left">
@@ -542,8 +561,9 @@ function DashboardPageInner() {
 
             <div className="header-right">
               {currentPanel === 'masterlist' && (
-                <button className="btn-add-header" onClick={() => setShowItemModal(true)} title="Add item">
+                <button className="btn-add" onClick={() => setShowItemModal(true)} title="Create masterlist">
                   <i className="ph-bold ph-plus" />
+                  <span style={{ marginLeft: 6, fontWeight: 200 }}></span>
                 </button>
               )}
               <span className="sync-indicator">
@@ -593,7 +613,6 @@ function DashboardPageInner() {
               })}
             </div>
 
-            {/* Dashboard */}
             {currentPanel === 'dashboard' && (
               <div className="grid-2-3-4">
                 {[
@@ -610,7 +629,6 @@ function DashboardPageInner() {
               </div>
             )}
 
-            {/* Masterlist */}
             {currentPanel === 'masterlist' && (
               <>
                 <div className="grid-masterlist">
@@ -636,13 +654,12 @@ function DashboardPageInner() {
                   <div className="empty-state">
                     <div className="icon"><i className="ph ph-folder-open" /></div>
                     <h3>{q ? 'No matches' : 'No items yet'}</h3>
-                    <p>{q ? 'Try a different search.' : 'Click + to add your first masterlist item.'}</p>
+                    <p>{q ? 'Try a different search.' : 'Click New Masterlist to create your first one.'}</p>
                   </div>
                 )}
               </>
             )}
 
-            {/* Commercial */}
             {currentPanel === 'commercial' && (
               <div className="empty-state">
                 <div className="icon"><i className="ph ph-megaphone" /></div>
@@ -651,7 +668,6 @@ function DashboardPageInner() {
               </div>
             )}
 
-            {/* CPS */}
             {currentPanel === 'cps' && (
               <div className="empty-state">
                 <div className="icon"><i className="ph ph-shield-check" /></div>
@@ -660,7 +676,6 @@ function DashboardPageInner() {
               </div>
             )}
 
-            {/* Weekly */}
             {currentPanel === 'weekly' && (
               <>
                 <div className="section-card">
@@ -703,7 +718,6 @@ function DashboardPageInner() {
               </>
             )}
 
-            {/* Dynamic panels */}
             {currentPanel.startsWith('dynamic_') && (() => {
               const idx = parseInt(currentPanel.split('_')[1], 10)
               const p = dynamicPanels[idx]
@@ -716,17 +730,10 @@ function DashboardPageInner() {
                   <button
                     onClick={() => handleRemovePanel(idx)}
                     style={{
-                      marginTop: '1rem',
-                      padding: '0.4rem 1rem',
-                      background: '#ef4444',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '9999px',
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      fontWeight: 600,
+                      marginTop: '1rem', padding: '0.4rem 1rem',
+                      background: '#ef4444', color: 'white', border: 'none',
+                      borderRadius: '9999px', cursor: 'pointer',
+                      display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600,
                     }}
                   >
                     <i className="ph ph-trash" /> Remove Panel
@@ -739,90 +746,76 @@ function DashboardPageInner() {
       </div>
 
       {/* Add Panel Modal */}
-      <div
-        className={`modal-overlay ${showPanelModal ? 'open' : ''}`}
-        onClick={e => { if (e.target === e.currentTarget) setShowPanelModal(false) }}
-      >
+      <div className={`modal-overlay ${showPanelModal ? 'open' : ''}`}
+        onClick={e => { if (e.target === e.currentTarget) setShowPanelModal(false) }}>
         <div className="modal-card">
           <h3><i className="ph-fill ph-plus-circle" style={{ color: '#B8734F' }} /> Add New Panel</h3>
           <label className="modal-label">PANEL NAME</label>
-          <input
-            className="modal-input"
-            value={panelName}
+          <input className="modal-input" value={panelName}
             onChange={e => setPanelName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') handleAddPanel()
-              if (e.key === 'Escape') setShowPanelModal(false)
-            }}
-            placeholder="e.g., Inventory, Reports"
-            autoFocus
-          />
+            onKeyDown={e => { if (e.key === 'Enter') handleAddPanel(); if (e.key === 'Escape') setShowPanelModal(false) }}
+            placeholder="e.g., Inventory, Reports" autoFocus />
           <label className="modal-label">ICON</label>
           <div className="modal-icon-grid">
             {PANEL_ICONS.map(ic => (
-              <div
-                key={ic}
-                className={`modal-icon-option ${panelIcon === ic ? 'selected' : ''}`}
-                onClick={() => setPanelIcon(ic)}
-              >
+              <div key={ic} className={`modal-icon-option ${panelIcon === ic ? 'selected' : ''}`}
+                onClick={() => setPanelIcon(ic)}>
                 <i className={`ph ${ic}`} />
               </div>
             ))}
           </div>
           <div className="modal-actions">
             <button className="btn-cancel" onClick={() => setShowPanelModal(false)}>Cancel</button>
-            <button className="btn-add" onClick={handleAddPanel}>
-              <i className="ph-bold ph-plus" /> Add Panel
-            </button>
+            <button className="btn-add" onClick={handleAddPanel}><i className="ph-bold ph-plus" /> Add Panel</button>
           </div>
         </div>
       </div>
 
-      {/* Add Masterlist Item Modal */}
-      <div
-        className={`modal-overlay ${showItemModal ? 'open' : ''}`}
-        onClick={e => { if (e.target === e.currentTarget) setShowItemModal(false) }}
-      >
+      {/* Dynamic Masterlist Builder Modal */}
+      <div className={`modal-overlay ${showItemModal ? 'open' : ''}`}
+        onClick={e => { if (e.target === e.currentTarget) setShowItemModal(false) }}>
         <div className="modal-card">
-          <h3><i className="ph-fill ph-folder-plus" style={{ color: '#B8734F' }} /> Add Masterlist Item</h3>
-          <label className="modal-label">ITEM NAME</label>
-          <input
-            className="modal-input"
-            value={itemName}
+          <h3><i className="ph-fill ph-folder-plus" style={{ color: '#B8734F' }} /> Create Masterlist</h3>
+
+          <div style={{
+            padding: '0.65rem 0.75rem',
+            marginBottom: '1rem',
+            borderRadius: '0.65rem',
+            background: 'rgba(184,115,79,0.08)',
+            border: '1px solid rgba(184,115,79,0.18)',
+            color: '#475569',
+            fontSize: '0.75rem',
+            lineHeight: 1.5
+          }}>
+            A separate Supabase table will be created automatically. You will add columns and records on the next screen. No URL or new TSX page is needed.
+          </div>
+
+          <label className="modal-label">MASTERLIST NAME</label>
+          <input className="modal-input" value={itemName}
             onChange={e => setItemName(e.target.value)}
-            placeholder="e.g., HR Masterlist"
-            autoFocus
-          />
+            onKeyDown={e => { if (e.key === 'Enter') handleAddItem(); if (e.key === 'Escape') setShowItemModal(false) }}
+            placeholder="e.g., HR Masterlist" autoFocus />
+
           <label className="modal-label">DESCRIPTION</label>
-          <input
-            className="modal-input"
-            value={itemDesc}
+          <input className="modal-input" value={itemDesc}
             onChange={e => setItemDesc(e.target.value)}
-            placeholder="Brief description"
-          />
-          <label className="modal-label">URL / PATH</label>
-          <input
-            className="modal-input"
-            value={itemUrl}
-            onChange={e => setItemUrl(e.target.value)}
-            placeholder="../folder/index.html"
-          />
+            onKeyDown={e => { if (e.key === 'Enter') handleAddItem() }}
+            placeholder="e.g., Employee records and contacts" />
+
           <label className="modal-label">ICON</label>
           <div className="modal-icon-grid">
             {MASTERLIST_ICONS.map(ic => (
-              <div
-                key={ic}
-                className={`modal-icon-option ${itemIcon === ic ? 'selected' : ''}`}
-                onClick={() => setItemIcon(ic)}
-              >
+              <div key={ic} className={`modal-icon-option ${itemIcon === ic ? 'selected' : ''}`}
+                onClick={() => setItemIcon(ic)}>
                 <i className={`ph ${ic}`} />
               </div>
             ))}
           </div>
+
           <div className="modal-actions">
             <button className="btn-cancel" onClick={() => setShowItemModal(false)}>Cancel</button>
             <button className="btn-add" onClick={handleAddItem}>
-              <i className="ph-bold ph-plus" /> Add Item
+              <i className="ph-bold ph-plus" /> Create Masterlist
             </button>
           </div>
         </div>
