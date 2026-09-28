@@ -17,26 +17,108 @@ type EditTarget =
 
 const MONTH_ABBR: Record<string, number> = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 }
 
+function makeLocalDate(year: number, monthIndex: number, day: number): Date | null {
+  if (!Number.isInteger(year) || year < 1 || year > 9999) return null
+  if (!Number.isInteger(monthIndex) || monthIndex < 0 || monthIndex > 11) return null
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null
+
+  const d = new Date(2000, 0, 1)
+  d.setHours(0, 0, 0, 0)
+  d.setFullYear(year, monthIndex, day)
+
+  // Reject impossible dates instead of letting JS roll them into another month.
+  if (d.getFullYear() !== year || d.getMonth() !== monthIndex || d.getDate() !== day) return null
+  return d
+}
+
+function normalizeImportedDate(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null
+  const s = String(dateStr).trim()
+  if (!s || s === '—') return null
+
+  // ISO date: keep the exact year/month/day from the CSV.
+  let m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:$|[T\s])/)
+  if (m) {
+    const d = makeLocalDate(+m[1], +m[2] - 1, +m[3])
+    return d ? `${m[1]}-${String(+m[2]).padStart(2, '0')}-${String(+m[3]).padStart(2, '0')}` : null
+  }
+
+  // US numeric dates: 01/15/2027, 1-15-2027, 1/15/27.
+  m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})(?:$|[\sT])/) 
+  if (m) {
+    let year = +m[3]
+    if (year < 100) year += 2000
+    const d = makeLocalDate(year, +m[1] - 1, +m[2])
+    return d ? `${year}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}` : null
+  }
+
+  // Day-month-name-year: 15 Jan 2027 / 15-Jan-2027.
+  m = s.match(/^(\d{1,2})[\s-]+([A-Za-z]{3,9})[\s-]+(\d{2,4})$/)
+  if (m) {
+    const mon = MONTH_ABBR[m[2].slice(0, 3).toLowerCase()]
+    let year = +m[3]
+    if (year < 100) year += 2000
+    if (mon !== undefined) {
+      const d = makeLocalDate(year, mon, +m[1])
+      return d ? `${year}-${String(mon + 1).padStart(2, '0')}-${String(+m[1]).padStart(2, '0')}` : null
+    }
+  }
+
+  // Month-name-day-year: Jan 15, 2027 / January 15 2027.
+  m = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{4})$/)
+  if (m) {
+    const mon = MONTH_ABBR[m[1].slice(0, 3).toLowerCase()]
+    if (mon !== undefined) {
+      const d = makeLocalDate(+m[3], mon, +m[2])
+      return d ? `${m[3]}-${String(mon + 1).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}` : null
+    }
+  }
+
+  // Excel/Sheets date serials. 2027 dates are around 46,000+.
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const serial = Number(s)
+    if (Number.isFinite(serial)) {
+      const excelEpoch = Date.UTC(1899, 11, 30)
+      const utc = new Date(excelEpoch + Math.floor(serial) * 86400000)
+      return `${utc.getUTCFullYear()}-${String(utc.getUTCMonth() + 1).padStart(2, '0')}-${String(utc.getUTCDate()).padStart(2, '0')}`
+    }
+  }
+
+  return null
+}
+
 function parseAirDate(dateStr: string | null | undefined): Date | null {
   if (!dateStr || dateStr === '—') return null
   const s = String(dateStr).trim()
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
-  if (m) return new Date(+m[1], +m[2] - 1, +m[3])
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s].*)?$/)
+  if (m) return makeLocalDate(+m[1], +m[2] - 1, +m[3])
+
+  // US numeric dates, e.g. 01/15/2027 or 1-15-2027.
+  m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/)
+  if (m) {
+    let year = +m[3]
+    if (year < 100) year += 2000
+    return makeLocalDate(year, +m[1] - 1, +m[2])
+  }
+
+  // Text dates, e.g. 15 Jan 2027 or 15-Jan-27.
   m = s.match(/^(\d{1,2})[\s-]+([A-Za-z]{3,9})(?:[\s-]+(\d{2,4}))?$/)
   if (m) {
     const day = +m[1]
     const mon = MONTH_ABBR[m[2].slice(0, 3).toLowerCase()]
     let year = m[3] ? +m[3] : new Date().getFullYear()
     if (year < 100) year += 2000
-    if (mon !== undefined) return new Date(year, mon, day)
+    if (mon !== undefined) return makeLocalDate(year, mon, day)
   }
+
+  // Text dates, e.g. Jan 15, 2027 or January 15 2027.
   m = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{4})$/)
   if (m) {
     const mon = MONTH_ABBR[m[1].slice(0, 3).toLowerCase()]
-    if (mon !== undefined) return new Date(+m[3], mon, +m[2])
+    if (mon !== undefined) return makeLocalDate(+m[3], mon, +m[2])
   }
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? null : d
+
+  return null
 }
 
 function toISODate(d: Date | null) {
@@ -324,6 +406,37 @@ export default function ClassicsPage() {
     setCurrentShowTitle(clean)
   }
 
+  async function deleteShow(show: Show) {
+    const title = show.title
+    if (!confirm(`Delete "${title}" and all of its episodes, schedule items, and turnovers?`)) return
+
+    try {
+      // Remove dependent rows first so this works even without ON DELETE CASCADE.
+      const [episodesResult, scheduleResult, turnoversResult] = await Promise.all([
+        db.from('classic_episodes').delete().eq('show_title', title),
+        db.from('classic_schedule').delete().eq('title', title),
+        db.from('classic_turnovers').delete().eq('title', title),
+      ])
+
+      const dependencyError = episodesResult.error || scheduleResult.error || turnoversResult.error
+      if (dependencyError) throw dependencyError
+
+      const { error } = await db.from('classic_titles').delete().eq('id', show.id)
+      if (error) throw error
+
+      setShows(prev => prev.filter(s => s.id !== show.id))
+      setEpisodes(prev => prev.filter(e => e.show_title !== title))
+      setSchedule(prev => prev.filter(item => item.title !== title))
+      setTurnovers(prev => prev.filter(t => t.title !== title))
+
+      setCurrentShowTitle(null)
+      setCurrentView('overview')
+      showMessage(`Deleted show: ${title}`, 'success')
+    } catch (err: any) {
+      showMessage('Delete show failed: ' + (err?.message || err), 'error')
+    }
+  }
+
   async function addEpisode() {
     if (!currentShowTitle) return
     const { data, error } = await db.from('classic_episodes')
@@ -503,10 +616,9 @@ export default function ClassicsPage() {
             if (!epName) return
             const rawDate = (colDate >= 0 ? (cols[colDate] || '') : '').trim()
             const statusRaw = (colStatus >= 0 ? (cols[colStatus] || '') : '').trim().toLowerCase()
-            let storedDate = rawDate
-            if (rawDate) {
-              const p = parseAirDate(rawDate)
-              if (p) storedDate = toISODate(p)
+            const storedDate = rawDate ? normalizeImportedDate(rawDate) : null
+            if (rawDate && !storedDate) {
+              throw new Error(`Could not parse air date: "${rawDate}"`)
             }
             const statusInt = (['done', '1', 'yes', 'true'].includes(statusRaw)) ? 1 : 0
             payload.push({ show_title: currentShowTitle, air_date: storedDate || null, episode_name: epName, status: statusInt })
@@ -878,6 +990,20 @@ export default function ClassicsPage() {
                     </p>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => deleteShow(currentShow)}
+                      title="Delete Show"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                        border: '1px solid #fecaca', borderRadius: '0.5rem',
+                        background: '#fff7f7', color: '#b91c1c',
+                        padding: '0.4rem 0.65rem', cursor: 'pointer',
+                        fontSize: '0.7rem', fontWeight: 700,
+                      }}
+                    >
+                      <i className="ph ph-trash" /> Delete Show
+                    </button>
                     <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#68748A' }}>
                       {getShowProgress(currentShow.title).done}/{getShowProgress(currentShow.title).total}
                     </span>
