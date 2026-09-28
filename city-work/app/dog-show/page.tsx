@@ -11,14 +11,72 @@ type EditTarget =
   | { kind: 'episode'; id: number; field: 'air_date' | 'episode_number' }
   | null
 
+function makeLocalDate(year: number, month: number, day: number): Date | null {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
+  const d = new Date(year, month - 1, day)
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month - 1 ||
+    d.getDate() !== day
+  ) return null
+  return d
+}
+
 function parseAirDate(s: string | null | undefined): Date | null {
   if (!s || s === '—') return null
   const str = String(s).trim()
-  const m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
-  if (m) return new Date(+m[1], +m[2] - 1, +m[3])
-  const d = new Date(str)
-  return isNaN(d.getTime()) ? null : d
+  if (!str) return null
+
+  // ISO: YYYY-MM-DD
+  let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s].*)?$/)
+  if (m) return makeLocalDate(+m[1], +m[2], +m[3])
+
+  // Excel/CSV-style numeric dates: M/D/YYYY, MM/DD/YY, M-D-YYYY, etc.
+  m = str.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/)
+  if (m) {
+    let year = +m[3]
+    if (year < 100) year += 2000
+    return makeLocalDate(year, +m[1], +m[2])
+  }
+
+  // Text month dates: September 13, 2027 / Sep 13 2027 / 13-Sep-2027
+  const months: Record<string, number> = {
+    jan: 1, feb: 2, mar: 3, apr: 4,
+    may: 5, jun: 6, jul: 7, aug: 8,
+    sep: 9, oct: 10, nov: 11, dec: 12
+  }
+
+  m = str.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{4})$/)
+  if (m) {
+    const month = months[m[1].slice(0, 3).toLowerCase()]
+    return month ? makeLocalDate(+m[3], month, +m[2]) : null
+  }
+
+  m = str.match(/^(\d{1,2})[\s-]+([A-Za-z]{3,9})[\s-]+(\d{2,4})$/)
+  if (m) {
+    let year = +m[3]
+    if (year < 100) year += 2000
+    const month = months[m[2].slice(0, 3).toLowerCase()]
+    return month ? makeLocalDate(year, month, +m[1]) : null
+  }
+
+  return null
 }
+
+function normalizeImportDate(s: string): string | null {
+  const value = s.trim()
+  if (!value) return null
+
+  const iso = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s].*)?$/)
+  if (iso) {
+    const d = makeLocalDate(+iso[1], +iso[2], +iso[3])
+    return d ? toISODate(d) : null
+  }
+
+  const d = parseAirDate(value)
+  return d ? toISODate(d) : null
+}
+
 function toISODate(d: Date | null) {
   if (!d) return ''
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -186,7 +244,7 @@ export default function DogShowPage() {
       return d >= today
     })
     if (!future.length) return null
-    return future.map(e => toISODate(parseAirDate(e.air_date))).sort().pop() || null
+    return future.map(e => toISODate(parseAirDate(e.air_date))).sort()[0] || null
   }, [episodes])
 
   const currentShow = useMemo(
@@ -443,13 +501,15 @@ export default function DogShowPage() {
             const num = (colNum >= 0 ? (cols[colNum] || '') : '').trim()
             const statusRaw = (colStatus >= 0 ? (cols[colStatus] || '') : '').trim().toLowerCase()
             if (!rawDate && !num) return
-            let storedDate = rawDate
+
+            let storedDate: string | null = null
             if (rawDate) {
-              const p = parseAirDate(rawDate)
-              if (p) storedDate = toISODate(p)
+              storedDate = normalizeImportDate(rawDate)
+              if (!storedDate) throw new Error(`Invalid date: "${rawDate}"`)
             }
+
             const statusInt = ['done', '1', 'yes', 'true', '✓'].includes(statusRaw) ? 1 : 0
-            payload.push({ show_title: currentShowTitle, air_date: storedDate || null, episode_number: num || null, status: statusInt })
+            payload.push({ show_title: currentShowTitle, air_date: storedDate, episode_number: num || null, status: statusInt })
           })
           if (!payload.length) throw new Error('No valid rows')
           const { error } = await db.from('dog_show_episodes').insert(payload)
@@ -495,6 +555,7 @@ export default function DogShowPage() {
             <span className="brand-icon"><i className="ph-fill ph-buildings" /></span>
             <span className="brand-text"><span className="city">City</span><span className="work">Work</span></span>
             <div className="header-sep" />
+
             <div className="show-tabs-wrap">
               {sidebarTabs.map(show => (
                 <button
@@ -508,10 +569,22 @@ export default function DogShowPage() {
                   <i className="ph ph-dog" />
                 </button>
               ))}
-              <button className="show-tab add" onClick={addNewShow} data-tip="Add new show" aria-label="Add new show">
-                <i className="ph-bold ph-plus" />
-              </button>
             </div>
+
+            <div className="show-actions">
+              <button className="top-action-btn add-show-btn" onClick={addNewShow}>
+                <i className="ph-bold ph-plus" />
+                <span>Add?</span>
+              </button>
+
+              {currentShowTitle && (
+                <button className="top-action-btn delete-show-btn" onClick={deleteShow}>
+                  <i className="ph ph-trash" />
+                  <span>Delete?</span>
+                </button>
+              )}
+            </div>
+
             <span className={`status-badge-top ${statusClass}`} style={{ flexShrink: 0 }}>
               <span className={`status-dot ${statusDot}`} />
             </span>
@@ -658,21 +731,23 @@ export default function DogShowPage() {
                         <span style={{ marginLeft: '0.5rem', fontSize: '0.6rem', background: '#e2e8f0', padding: '0.15rem 0.6rem', borderRadius: '999px', color: '#68748A' }}>
                           {getShowProgress(currentShow.title).total} total
                         </span>
-                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                          <button className="btn-csv import" onClick={importCSVForShow} title="Import">
+
+                        <div className="episode-actions">
+                          <button className="btn-csv import" onClick={importCSVForShow} title="Import episodes from CSV">
                             <i className="ph ph-upload-simple" />
+                            <span>Import CSV</span>
                           </button>
-                          <button className="btn-csv export" onClick={exportCSVForShow} title="Export">
+                          <button className="btn-csv export" onClick={exportCSVForShow} title="Export episodes to CSV">
                             <i className="ph ph-download-simple" />
-                          </button>
-                          <button className="btn-csv danger" onClick={deleteShow} title="Delete show">
-                            <i className="ph ph-trash" />
+                            <span>Export CSV</span>
                           </button>
                           <button className="btn-add-episode" onClick={addEpisode}>
                             <i className="ph-bold ph-plus" />
+                            <span>Add Episode</span>
                           </button>
                         </div>
                       </div>
+
                       <div className="episode-filter-bar">
                         <button className={`filter-pill ${episodeFilter === 'all' ? 'active' : ''}`} onClick={() => setEpisodeFilter('all')}>All <span>{episodeCounts.all}</span></button>
                         <button className={`filter-pill ${episodeFilter === 'done' ? 'active' : ''}`} onClick={() => setEpisodeFilter('done')}>Done <span>{episodeCounts.done}</span></button>
@@ -681,6 +756,7 @@ export default function DogShowPage() {
                         <input type="text" className="search-in-show" placeholder="Search episodes..."
                           value={episodeSearchTerm} onChange={e => setEpisodeSearchTerm(e.target.value)} />
                       </div>
+
                       <div className="table-wrap table-scroll-container">
                         <table>
                           <thead>
@@ -689,15 +765,15 @@ export default function DogShowPage() {
                                   onClick={() => { if (sortField === 'air_date') setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortField('air_date'); setSortDir('asc') } }}>
                                 Air Date <i className={`ph ${sortField === 'air_date' ? (sortDir === 'asc' ? 'ph-sort-ascending' : 'ph-sort-descending') : 'ph-arrows-down-up'}`} />
                               </th>
-                              <th style={{ width: '50%', cursor: 'pointer' }}
+                              <th style={{ width: '35%', cursor: 'pointer' }}
                                   onClick={() => { if (sortField === 'episode_number') setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortField('episode_number'); setSortDir('asc') } }}>
                                 Episode Number <i className={`ph ${sortField === 'episode_number' ? (sortDir === 'asc' ? 'ph-sort-ascending' : 'ph-sort-descending') : 'ph-arrows-down-up'}`} />
                               </th>
-                              <th style={{ width: '15%', textAlign: 'center', cursor: 'pointer' }}
+                              <th style={{ width: '20%', textAlign: 'center', cursor: 'pointer' }}
                                   onClick={() => { if (sortField === 'status') setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortField('status'); setSortDir('asc') } }}>
                                 Status <i className={`ph ${sortField === 'status' ? (sortDir === 'asc' ? 'ph-sort-ascending' : 'ph-sort-descending') : 'ph-arrows-down-up'}`} />
                               </th>
-                              <th style={{ width: '10%', textAlign: 'center' }}>Action</th>
+                              <th style={{ width: '20%', textAlign: 'center' }}>Action</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -747,7 +823,7 @@ export default function DogShowPage() {
                                     <span className={badge}>{label}</span>
                                   </td>
                                   <td style={{ textAlign: 'center' }}>
-                                    <button className="btn-delete-episode" onClick={() => deleteEpisode(ep.id)} title="Delete">
+                                    <button className="btn-delete-episode" onClick={() => deleteEpisode(ep.id)} title="Delete episode">
                                       <i className="ph ph-trash" />
                                     </button>
                                   </td>
@@ -771,7 +847,7 @@ export default function DogShowPage() {
                               <div className="card-header">
                                 <div>
                                   <h4>{ep.episode_number ? `Episode ${ep.episode_number}` : 'Untitled'}</h4>
-                                  <div className="date">📅 {formatDate(ep.air_date)}</div>
+                                  <div className="date"><i className="ph ph-calendar-blank" /> {formatDate(ep.air_date)}</div>
                                 </div>
                                 <span className={badge} onClick={() => toggleStatus(ep)} style={{ cursor: 'pointer' }}>{label}</span>
                               </div>
